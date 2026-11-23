@@ -1,0 +1,214 @@
+name: Build Signed Release APK (CalmWave)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_code:
+        description: 'شماره نسخه عددی (نسخه اول: 1 | آپدیت‌های بعدی: 2، 3 و...)'
+        required: true
+        default: '1'
+      version_name:
+        description: 'نام نسخه نمایشی (مثلاً 1.0 یا 1.1)'
+        required: true
+        default: '1.0'
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Install Capacitor & Initialize Android Project
+        run: |
+          npm install
+          npm run build
+          npx cap init "آوای آرامش" "ir.calmwave.music" --web-dir www
+          npx cap add android
+          npx cap sync android
+
+      - name: Generate CalmWave Icon & Configure Audio/Back Key
+        run: |
+          pip install pillow
+          python3 - << 'EOF'
+          import math, os, shutil
+          from PIL import Image, ImageDraw
+
+          def lerp_color(c1, c2, t):
+              return tuple(int(c1[i] + (c2[i] - c1[i]) * t) for i in range(3)) + (255,)
+
+          def draw_calmwave_icon(final_size=512):
+              S = final_size * 2
+              img = Image.new("RGBA", (S, S), (7, 11, 22, 255))
+              draw = ImageDraw.Draw(img)
+              cx, cy = S / 2, S / 2
+
+              # پس‌زمینه گرادیان شب آرام
+              for y in range(S):
+                  col = lerp_color((7, 11, 22), (20, 36, 68), y / S)
+                  draw.line([(0, y), (S, y)], fill=col)
+
+              # هاله دایره‌ای مرکزی
+              r_outer = S * 0.40
+              draw.ellipse(
+                  [cx - r_outer, cy - r_outer, cx + r_outer, cy + r_outer],
+                  fill=(12, 22, 42, 255),
+                  outline=(56, 189, 248, 255),
+                  width=int(S * 0.022)
+              )
+
+              # هلال ماه بالای موج صوتی
+              mr = S * 0.075
+              mx, my = cx, cy - S * 0.175
+              draw.ellipse([mx - mr, my - mr, mx + mr, my + mr], fill=(45, 212, 191, 255))
+              draw.ellipse(
+                  [mx - mr * 0.45, my - mr * 1.15, mx + mr * 1.35, my + mr * 0.65],
+                  fill=(12, 22, 42, 255)
+              )
+
+              # موج صوتی نرم با گرادیان فیروزه‌ای به آبی و بنفش
+              steps = 160
+              x_start, x_end = cx - S * 0.28, cx + S * 0.28
+              wave_y = cy + S * 0.07
+              for i in range(steps + 1):
+                  t = i / steps
+                  x = x_start + (x_end - x_start) * t
+                  env = math.sin(t * math.pi)
+                  y = wave_y - math.sin(t * 4 * math.pi) * (S * 0.125) * env
+                  if t < 0.5:
+                      col = lerp_color((45, 212, 191), (56, 189, 248), t * 2)
+                  else:
+                      col = lerp_color((56, 189, 248), (167, 139, 250), (t - 0.5) * 2)
+                  rad = S * (0.014 + 0.011 * env)
+                  draw.ellipse([x - rad, y - rad, x + rad, y + rad], fill=col)
+
+              return img.resize((final_size, final_size), Image.Resampling.LANCZOS)
+
+          icon = draw_calmwave_icon(512)
+          icon.save("CalmWave-Icon-512x512.png")
+
+          res_dir = "android/app/src/main/res"
+          sizes = {
+              "mipmap-mdpi": 48,
+              "mipmap-hdpi": 72,
+              "mipmap-xhdpi": 96,
+              "mipmap-xxhdpi": 144,
+              "mipmap-xxxhdpi": 192
+          }
+          for folder, px in sizes.items():
+              p = os.path.join(res_dir, folder)
+              os.makedirs(p, exist_ok=True)
+              resized = icon.resize((px, px), Image.Resampling.LANCZOS)
+              resized.save(os.path.join(p, "ic_launcher.png"))
+              resized.save(os.path.join(p, "ic_launcher_round.png"))
+              resized.save(os.path.join(p, "ic_launcher_foreground.png"))
+
+          anydpi = os.path.join(res_dir, "mipmap-anydpi-v26")
+          if os.path.exists(anydpi):
+              shutil.rmtree(anydpi)
+
+          manifest_path = "android/app/src/main/AndroidManifest.xml"
+          with open(manifest_path, "r", encoding="utf-8") as mf:
+              mtxt = mf.read()
+          if "usesCleartextTraffic" not in mtxt:
+              mtxt = mtxt.replace("<application", '<application android:usesCleartextTraffic="true"', 1)
+              with open(manifest_path, "w", encoding="utf-8") as mf:
+                  mf.write(mtxt)
+          EOF
+
+          cat << 'EOF' > android/app/src/main/java/ir/calmwave/music/MainActivity.java
+          package ir.calmwave.music;
+
+          import android.os.Bundle;
+          import android.webkit.WebSettings;
+          import androidx.activity.OnBackPressedCallback;
+          import com.getcapacitor.BridgeActivity;
+
+          public class MainActivity extends BridgeActivity {
+              @Override
+              public void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+
+                  if (getBridge() != null && getBridge().getWebView() != null) {
+                      WebSettings settings = getBridge().getWebView().getSettings();
+                      settings.setMediaPlaybackRequiresUserGesture(false);
+                  }
+
+                  getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
+                      @Override
+                      public void handleOnBackPressed() {
+                          if (getBridge() != null && getBridge().getWebView() != null) {
+                              getBridge().getWebView().evaluateJavascript(
+                                  "(function(){ return window.handleAndroidBack ? window.handleAndroidBack() : 'EXIT'; })()",
+                                  result -> {
+                                      if (result != null && result.contains("EXIT")) {
+                                          finish();
+                                      }
+                                  }
+                              );
+                          } else {
+                              finish();
+                          }
+                      }
+                  });
+              }
+          }
+          EOF
+
+      - name: Apply Version Code, Permanent Keystore & Sign Release APK
+        working-directory: ./android
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          VER_CODE="${{ github.event.inputs.version_code }}"
+          VER_NAME="${{ github.event.inputs.version_name }}"
+          VER_CODE=${VER_CODE:-1}
+          VER_NAME=${VER_NAME:-"1.0"}
+
+          sed -i -E "s/versionCode[[:space:]]*=?[[:space:]]*[0-9]+/versionCode $VER_CODE/g" app/build.gradle
+          sed -i -E "s/versionName[[:space:]]*=?[[:space:]]*\"[^\"]+\"/versionName \"$VER_NAME\"/g" app/build.gradle
+
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "Using permanent keystore from GitHub Secrets..."
+            echo "$KEYSTORE_BASE64" | base64 -d > release-key.jks
+          else
+            echo "Generating new permanent keystore for first release..."
+            keytool -genkey -v -keystore release-key.jks -keyalg RSA -keysize 2048 -validity 10000 \
+              -alias appkey -storepass 123456 -keypass 123456 \
+              -dname "CN=CalmWave, OU=Mobile, O=CalmWaveApp, L=Mashhad, S=Khorasan, C=IR"
+            base64 -w 0 release-key.jks > ../KEYSTORE_BASE64.txt
+          fi
+
+          chmod +x gradlew
+          ./gradlew assembleRelease \
+            -Pandroid.injected.signing.store.file=$(pwd)/release-key.jks \
+            -Pandroid.injected.signing.store.password=123456 \
+            -Pandroid.injected.signing.key.alias=appkey \
+            -Pandroid.injected.signing.key.password=123456
+
+      - name: Prepare APK for Upload
+        run: |
+          cp android/app/build/outputs/apk/release/app-release.apk ./CalmWave-Release.apk
+
+      - name: Upload Signed APK, Store Icon & Keystore Backup
+        uses: actions/upload-artifact@v4
+        with:
+          name: CalmWave-Bazaar-Myket-Package
+          if-no-files-found: ignore
+          path: |
+            ./CalmWave-Release.apk
+            ./CalmWave-Icon-512x512.png
+            ./android/release-key.jks
+            ./KEYSTORE_BASE64.txt
