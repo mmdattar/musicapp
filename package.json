@@ -1,0 +1,14 @@
+{
+  "name": "calmwave-music",
+  "version": "1.0.0",
+  "description": "CalmWave - Instrumental, Relaxing, Sleep, Focus & Lo-Fi Music App",
+  "main": "index.html",
+  "scripts": {
+    "build": "mkdir -p www && cp index.html www/index.html && (cp songs.json www/songs.json || true)"
+  },
+  "dependencies": {
+    "@capacitor/android": "^6.0.0",
+    "@capacitor/cli": "^6.0.0",
+    "@capacitor/core": "^6.0.0"
+  }
+}
