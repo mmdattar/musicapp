@@ -26,4 +26,4 @@ jobs:
           if ! git diff --staged --quiet; then
             git commit -m "Auto-update royalty-free tracks"
             git push
-          fi
+            curl -s "https://purge.jsdelivr.net/gh/mmdattar/musicapp@main/songs.json" || true
