@@ -21,6 +21,22 @@
     * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Vazirmatn', sans-serif; -webkit-tap-highlight-color: transparent; user-select: none; }
     body { background: var(--bg); color: var(--text); padding-bottom: 108px; overflow-x: hidden; }
 
+    /* Mandatory Adsterra Overlay */
+    .ad-overlay {
+      position: fixed; inset: 0; background: #000; z-index: 9999;
+      display: none; flex-direction: column;
+    }
+    .ad-overlay.open { display: flex; }
+    .ad-close-btn {
+      position: absolute; top: 16px; right: 16px; z-index: 10000;
+      width: 40px; height: 40px; border-radius: 50%;
+      background: rgba(15, 23, 42, 0.92); border: 2px solid var(--accent);
+      color: #fff; font-size: 1.2rem; font-weight: 900;
+      display: none; align-items: center; justify-content: center; cursor: pointer;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.65);
+    }
+    .ad-iframe { width: 100%; height: 100%; border: none; background: #070b14; }
+
     /* Intro Splash */
     .splash-screen {
       position: fixed; inset: 0; z-index: 9500;
@@ -338,7 +354,14 @@
     .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
     .status { text-align: center; padding: 50px 20px; color: var(--muted); font-size: 0.88rem; line-height: 1.8; }
   </style>
-</head><body>
+</head>
+<body>
+
+  <!-- تبلیغ اجباری ۱۵ ثانیه‌ای -->
+  <div class="ad-overlay" id="ad-overlay">
+    <button class="ad-close-btn" id="ad-close-btn" onclick="closeAd()">✕</button>
+    <iframe class="ad-iframe" id="ad-iframe" sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe>
+  </div>
 
   <!-- صفحه ورود آرامش‌بخش -->
   <div class="splash-screen" id="splash-screen">
@@ -580,10 +603,12 @@
   <div class="toast" id="toast"></div>
 
   <script>
-    const GITHUB_REPO = "frankalayari-beep/musicapp";
-    const RAW_JSON_URL = `https://raw.githubusercontent.com/${GITHUB_REPO}/main/songs.json`;
-    const PAGES_JSON_URL = `https://frankalayari-beep.github.io/musicapp/songs.json`;
+    const GITHUB_REPO = "mmdattar/musicapp";
     const CDN_JSON_URL = `https://cdn.jsdelivr.net/gh/${GITHUB_REPO}@main/songs.json`;
+    const FASTLY_CDN_URL = `https://fastly.jsdelivr.net/gh/${GITHUB_REPO}@main/songs.json`;
+    const RAW_JSON_URL = `https://raw.githubusercontent.com/${GITHUB_REPO}/main/songs.json`;
+    const PAGES_JSON_URL = `https://mmdattar.github.io/musicapp/songs.json`;
+    const ADSTERRA_URL = "https://asiafilm.org/4/052064ca4ffd0916d363a8d4ca962a64";
 
     const audio = document.getElementById('audio-player');
 
@@ -597,7 +622,9 @@
     let isShuffle = false;
     let isRepeatOne = false;
     let isSeeking = false;
-    let isLoadingTracks = false;
+    let adOpen = false;
+    let splashOpen = true;
+    let isFirstStartupAd = true;
     let lastBackPress = 0;
 
     let sleepTimerId = null;
@@ -706,6 +733,45 @@
       window._toastTimer = setTimeout(() => el.classList.remove('show'), 2500);
     }
 
+    function triggerMandatoryAd() {
+      if (!ADSTERRA_URL) {
+        if (isFirstStartupAd) {
+          isFirstStartupAd = false;
+          hideSplashAfterDelay();
+        }
+        return;
+      }
+      adOpen = true;
+      const overlay = document.getElementById('ad-overlay');
+      const closeBtn = document.getElementById('ad-close-btn');
+      closeBtn.style.display = 'none';
+      document.getElementById('ad-iframe').src = ADSTERRA_URL;
+      overlay.classList.add('open');
+      setTimeout(() => { closeBtn.style.display = 'flex'; }, 15000);
+    }
+
+    function hideSplashAfterDelay() {
+      splashOpen = true;
+      setTimeout(() => {
+        document.getElementById('splash-screen').classList.add('hide');
+        splashOpen = false;
+      }, 1700);
+    }
+
+    function closeAd() {
+      adOpen = false;
+      document.getElementById('ad-overlay').classList.remove('open');
+      document.getElementById('ad-iframe').src = 'about:blank';
+      if (isFirstStartupAd) {
+        isFirstStartupAd = false;
+        hideSplashAfterDelay();
+      }
+    }
+
+    setInterval(() => {
+      if (!adOpen && !splashOpen && !isPlaying) triggerMandatoryAd();
+    }, 30 * 60 * 1000);
+
     function fmtTime(sec) {
       if (!sec || isNaN(sec) || !isFinite(sec)) return '00:00';
       const s = Math.floor(sec);
@@ -731,7 +797,8 @@
       const b = document.getElementById('fav-badge');
       b.textContent = count;
       b.style.display = count > 0 ? 'flex' : 'none';
-    }function escHtml(str) {
+    }
+    function escHtml(str) {
       return String(str || '')
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
@@ -740,96 +807,98 @@
         .replace(/'/g, '&#39;');
     }
 
-    async function fetchJsonWithTimeout(url, ms = 7000) {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), ms);
-      try {
-        const res = await fetch(url, { cache: 'no-store', signal: controller.signal });
-        if (!res.ok) return null;
-        const data = await res.json();
-        return Array.isArray(data) && data.length > 0 ? data : null;
-      } catch (e) {
-        return null;
-      } finally {
-        clearTimeout(timer);
-      }
-    }
-
     function getMaxTrackId(list) {
       if (!Array.isArray(list) || !list.length) return 0;
       return Math.max(...list.map(item => Number(item.track_id) || 0));
     }
 
+    async function fetchSimpleJson(url) {
+      try {
+        const res = await fetch(url);
+        if (!res.ok) return null;
+        const data = await res.json();
+        return Array.isArray(data) && data.length > 0 ? data : null;
+      } catch (e) {
+        return null;
+      }
+    }
+
+    function applyTracksData(raw) {
+      allTracks = raw.map((item, idx) => ({
+        ...item,
+        track_id: item.track_id || (1000 + raw.length - idx),
+        category: item.category || 'relax'
+      }));
+      try {
+        localStorage.setItem('cw_cached_tracks', JSON.stringify(allTracks));
+      } catch (e) {}
+      renderCategories();
+      renderTracks();
+    }
+
+    let activeLoadSeq = 0;
+
     async function loadTracks(manual = false) {
-      if (isLoadingTracks) return;
-      isLoadingTracks = true;
+      const seq = ++activeLoadSeq;
       const listEl = document.getElementById('track-list');
       const t = UI[currentLang];
       if (manual) showToast(t.syncing);
 
-      try {
-        const bust = `${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-        const onlineSources = [
-          `${RAW_JSON_URL}?t=${bust}`,
-          `${PAGES_JSON_URL}?t=${bust}`,
-          `${CDN_JSON_URL}?t=${bust}`
-        ];
+      const bust = `${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      const onlineSources = [
+        `${CDN_JSON_URL}?t=${bust}`,
+        `${FASTLY_CDN_URL}?t=${bust}`,
+        `${RAW_JSON_URL}?t=${bust}`,
+        `${PAGES_JSON_URL}?t=${bust}`
+      ];
 
-        let raw = null;
-        let fetchedOnline = false;
+      let gotAnyOnline = false;
+      let bestMaxId = getMaxTrackId(allTracks);
+      let toastedSuccess = false;
 
-        for (const url of onlineSources) {
-          const data = await fetchJsonWithTimeout(url, 7000);
-          if (data) {
-            raw = data;
-            fetchedOnline = true;
-            break;
+      const tasks = onlineSources.map(url =>
+        fetchSimpleJson(url).then(data => {
+          if (!data || seq !== activeLoadSeq) return;
+          const incomingMaxId = getMaxTrackId(data);
+          if (!gotAnyOnline || incomingMaxId > bestMaxId) {
+            gotAnyOnline = true;
+            bestMaxId = Math.max(bestMaxId, incomingMaxId);
+            applyTracksData(data);
+            if (manual && !toastedSuccess) {
+              toastedSuccess = true;
+              showToast(t.updated);
+            }
           }
-        }
+        })
+      );
 
-        if (fetchedOnline && raw) {
-          try {
-            localStorage.setItem('cw_cached_tracks', JSON.stringify(raw));
-          } catch (e) {}
+      await Promise.all(tasks);
+      if (seq !== activeLoadSeq) return;
+
+      if (!gotAnyOnline) {
+        let cached = null;
+        try {
+          const c = JSON.parse(localStorage.getItem('cw_cached_tracks') || 'null');
+          if (Array.isArray(c) && c.length > 0) cached = c;
+        } catch (e) {}
+
+        const localBundled = await fetchSimpleJson(`./songs.json?t=${bust}`);
+        let fallbackRaw = null;
+        if (cached && localBundled) {
+          fallbackRaw = getMaxTrackId(cached) >= getMaxTrackId(localBundled) ? cached : localBundled;
         } else {
-          let cached = null;
-          try {
-            const c = JSON.parse(localStorage.getItem('cw_cached_tracks') || 'null');
-            if (Array.isArray(c) && c.length > 0) cached = c;
-          } catch (e) {}
-
-          const localBundled = await fetchJsonWithTimeout(`./songs.json?t=${bust}`, 5000);
-          if (cached && localBundled) {
-            raw = getMaxTrackId(cached) >= getMaxTrackId(localBundled) ? cached : localBundled;
-          } else {
-            raw = cached || localBundled;
-          }
+          fallbackRaw = cached || localBundled;
         }
 
-        if (!raw) {
-          if (!allTracks.length) {
-            listEl.innerHTML = `<div class="status">${t.loadErr}</div>`;
-            document.getElementById('section-count').textContent = t.tracksCount(0);
-          } else if (manual) {
-            showToast(t.offlineToast);
-          }
-          return;
+        if (fallbackRaw) {
+          applyTracksData(fallbackRaw);
+          if (manual) showToast(t.offlineToast);
+        } else if (!allTracks.length) {
+          listEl.innerHTML = `<div class="status">${t.loadErr}</div>`;
+          document.getElementById('section-count').textContent = t.tracksCount(0);
+        } else if (manual) {
+          showToast(t.offlineToast);
         }
-
-        allTracks = raw.map((item, idx) => ({
-          ...item,
-          track_id: item.track_id || (1000 + raw.length - idx),
-          category: item.category || 'relax'
-        }));
-
-        renderCategories();
-        renderTracks();
-
-        if (manual) {
-          showToast(fetchedOnline ? t.updated : t.offlineToast);
-        }
-      } finally {
-        isLoadingTracks = false;
       }
     }
 
@@ -1354,6 +1423,7 @@
 
     /* Android Back Key */
     window.handleAndroidBack = function() {
+      if (adOpen || splashOpen) return "BLOCKED";
       if (document.getElementById('sheet-backdrop').classList.contains('open')) { closeSheet(); return "HANDLED"; }
       if (document.getElementById('left-drawer').classList.contains('open')) { closeDrawer(); return "HANDLED"; }
       if (document.getElementById('full-player').classList.contains('open')) { closeFullPlayer(); return "HANDLED"; }
@@ -1368,11 +1438,8 @@
     updateFavBadge();
     setLanguage(currentLang, true);
     syncPlayerUI();
+    triggerMandatoryAd();
     loadTracks();
-
-    setTimeout(() => {
-      document.getElementById('splash-screen').classList.add('hide');
-    }, 1700);
   </script>
 </body>
 </html>
